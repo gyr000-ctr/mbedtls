@@ -367,6 +367,15 @@
 #error  "MBEDTLS_PKCS7_C is defined, but not all prerequisites"
 #endif
 
+#if defined(MBEDTLS_HPKE_C) && \
+    ( !defined(MBEDTLS_PSA_CRYPTO_C) || \
+      !defined(PSA_WANT_ALG_ECDH) || \
+      !defined(PSA_WANT_ALG_HKDF) || \
+      !defined(PSA_WANT_ALG_HKDF_EXTRACT) || \
+      !defined(PSA_WANT_ALG_HKDF_EXPAND) )
+#error "MBEDTLS_HPKE_C is defined, but not all prerequisites"
+#endif
+
 #if defined(MBEDTLS_TIMING_C) && \
     !(defined(MBEDTLS_HAVE_TIME) || defined(MBEDTLS_TIMING_ALT))
 #error "MBEDTLS_TIMING_C requires either MBEDTLS_HAVE_TIME or MBEDTLS_TIMING_ALT"

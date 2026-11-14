@@ -1,0 +1,1333 @@
+/* BEGIN_HEADER */
+#include "mbedtls/hpke.h"
+#include "mbedtls/platform_util.h"
+#include "psa/crypto.h"
+/* END_HEADER */
+
+/* BEGIN_DEPENDENCIES
+ * depends_on:MBEDTLS_HPKE_C
+ * END_DEPENDENCIES
+ */
+
+/* BEGIN_SUITE_HELPERS */
+
+/* Convenience wrappers around the data_t arguments used by the vectors. */
+static const unsigned char *d(const data_t *p)
+{
+    return p->x;
+}
+
+static size_t dl(const data_t *p)
+{
+    return p->len;
+}
+
+/* Set up a sender context from vector material. */
+static int hpke_test_setup_s(mbedtls_hpke_context *ctx,
+                             int kem_id, int kdf_id, int aead_id,
+                             const data_t *pk_r, const data_t *info,
+                             const data_t *sk_e, data_t *enc)
+{
+    size_t enc_len = 0;
+    int ret = mbedtls_hpke_setup_base_s(ctx, kem_id, kdf_id, aead_id,
+                                        d(pk_r), dl(pk_r),
+                                        d(info), dl(info),
+                                        d(sk_e), dl(sk_e),
+                                        enc->x, enc->len, &enc_len);
+    if (ret == 0) {
+        enc->len = enc_len;
+    }
+    return ret;
+}
+
+static int hpke_test_setup_r(mbedtls_hpke_context *ctx,
+                             int kem_id, int kdf_id, int aead_id,
+                             const data_t *enc, const data_t *sk_r,
+                             const data_t *info)
+{
+    return mbedtls_hpke_setup_base_r(ctx, kem_id, kdf_id, aead_id,
+                                     d(enc), dl(enc),
+                                     d(sk_r), dl(sk_r),
+                                     d(info), dl(info));
+}
+
+/* Deterministically derive a valid 32-byte private scalar with
+ * psa_generate_random replaced by a fixed fill for reproducibility is not
+ * needed here: callers that need randomness use psa_generate_random(). */
+static void hpke_fill_pattern(unsigned char *buf, size_t len,
+                              unsigned char seed)
+{
+    for (size_t i = 0; i < len; i++) {
+        buf[i] = (unsigned char) (seed + (unsigned char) i);
+    }
+}
+
+/* END_SUITE_HELPERS */
+
+/* BEGIN_CASE */
+void hpke_base_roundtrip(int kem_id, int kdf_id, int aead_id,
+                         data_t *info, data_t *pk_r, data_t *sk_r,
+                         data_t *sk_e, data_t *expected_enc,
+                         data_t *aad, data_t *pt, data_t *expected_ct,
+                         data_t *expected_nonce, data_t *expected_key,
+                         data_t *expected_exporter,
+                         data_t *export_ctx, int export_len,
+                         data_t *expected_exported, int enc_len_exp)
+{
+    mbedtls_hpke_context snd;
+    mbedtls_hpke_context rcv;
+    unsigned char enc[MBEDTLS_HPKE_MAX_ENC_LEN];
+    size_t enc_len = 0;
+    /* Largest vector plaintext is 1000 bytes plus a 16-byte tag. */
+    unsigned char ct[1024];
+    unsigned char out[1024];
+    size_t ct_len = 0, out_len = 0;
+    unsigned char exported[MBEDTLS_HPKE_MAX_EXPORT_LEN];
+    int ret;
+
+    USE_PSA_INIT();
+
+    mbedtls_hpke_init(&snd);
+    mbedtls_hpke_init(&rcv);
+
+    /* SetupBaseS and the encapsulated key match the vector. */
+    ret = mbedtls_hpke_setup_base_s(&snd, kem_id, kdf_id, aead_id,
+                                    d(pk_r), dl(pk_r),
+                                    d(info), dl(info),
+                                    d(sk_e), dl(sk_e),
+                                    enc, sizeof(enc), &enc_len);
+    TEST_ASSERT(ret == 0);
+    TEST_ASSERT(enc_len == (size_t) enc_len_exp);
+    ASSERT_COMPARE(enc, enc_len, d(expected_enc), dl(expected_enc));
+
+    /* The sender's first seal matches the vector ciphertext. */
+    ret = mbedtls_hpke_seal(&snd, d(aad), dl(aad),
+                            d(pt), dl(pt), ct, sizeof(ct), &ct_len);
+    TEST_ASSERT(ret == 0);
+    TEST_ASSERT(ct_len == dl(pt) + MBEDTLS_HPKE_TAG_LEN);
+    ASSERT_COMPARE(ct, ct_len, d(expected_ct), dl(expected_ct));
+
+    /* The recipient derives the same context from enc. */
+    ret = hpke_test_setup_r(&rcv, kem_id, kdf_id, aead_id,
+                            expected_enc, sk_r, info);
+    TEST_ASSERT(ret == 0);
+
+    /* Open() recovers the plaintext, in constant-time tag verification. */
+    ret = mbedtls_hpke_open(&rcv, d(aad), dl(aad),
+                            ct, ct_len, out, sizeof(out), &out_len);
+    TEST_ASSERT(ret == 0);
+    ASSERT_COMPARE(out, out_len, d(pt), dl(pt));
+
+    /* Re-sealing from a fresh sender reproduces the vector nonce/key
+     * material indirectly: a second round trip must agree both sides. */
+    ret = mbedtls_hpke_export(&snd, d(export_ctx), dl(export_ctx),
+                              (size_t) export_len, exported);
+    TEST_ASSERT(ret == 0);
+    TEST_ASSERT((size_t) export_len == dl(expected_exported));
+    ASSERT_COMPARE(exported, (size_t) export_len,
+                   d(expected_exported), dl(expected_exported));
+
+    /* Exporter agrees on the recipient side as well. */
+    memset(exported, 0, sizeof(exported));
+    ret = mbedtls_hpke_export(&rcv, d(export_ctx), dl(export_ctx),
+                              (size_t) export_len, exported);
+    TEST_ASSERT(ret == 0);
+    ASSERT_COMPARE(exported, (size_t) export_len,
+                   d(expected_exported), dl(expected_exported));
+
+    /* The exporter secret itself matches the vector. */
+    ASSERT_COMPARE(snd.exporter_secret, snd.nh,
+                   d(expected_exporter), dl(expected_exporter));
+
+    /* The context keeps the vector base nonce and key; this also pins
+     * the internal structure layout to the RFC schedule. */
+    ASSERT_COMPARE(snd.base_nonce, snd.nonce_len,
+                   d(expected_nonce), dl(expected_nonce));
+    ASSERT_COMPARE(snd.key, snd.key_len,
+                   d(expected_key), dl(expected_key));
+
+exit:
+    mbedtls_hpke_free(&snd);
+    mbedtls_hpke_free(&rcv);
+    USE_PSA_DONE();
+}
+/* END_CASE */
+
+/* BEGIN_CASE */
+void hpke_seal_sequence(int kem_id, int kdf_id, int aead_id,
+                        data_t *info, data_t *pk_r, data_t *sk_e,
+                        data_t *enc, data_t *expected_key,
+                        data_t *expected_nonce,
+                        int seq0, data_t *aad0, data_t *pt0, data_t *ct0,
+                        int seq1, data_t *aad1, data_t *pt1, data_t *ct1)
+{
+    mbedtls_hpke_context snd;
+    unsigned char got_enc[MBEDTLS_HPKE_MAX_ENC_LEN];
+    unsigned char buf[512];
+    size_t len;
+    data_t enc_buf = { .x = got_enc, .len = sizeof(got_enc) };
+    int ret;
+
+    USE_PSA_INIT();
+
+    mbedtls_hpke_init(&snd);
+
+    ret = hpke_test_setup_s(&snd, kem_id, kdf_id, aead_id,
+                            pk_r, info, sk_e, &enc_buf);
+    TEST_ASSERT(ret == 0);
+    ASSERT_COMPARE(got_enc, enc_buf.len, d(enc), dl(enc));
+    ASSERT_COMPARE(snd.key, snd.key_len, d(expected_key), dl(expected_key));
+    ASSERT_COMPARE(snd.base_nonce, snd.nonce_len,
+                   d(expected_nonce), dl(expected_nonce));
+
+    /* Run up to seq0, then verify the vector ciphertext for the
+     * (possibly non-contiguous) sequence numbers. The filler messages
+     * exercise the nonce XOR on intermediate sequence numbers. */
+    for (int i = 0; i < seq0; i++) {
+        ret = mbedtls_hpke_seal(&snd, NULL, 0,
+                                (const unsigned char *) "x", 1,
+                                buf, sizeof(buf), &len);
+        TEST_ASSERT(ret == 0);
+    }
+    ret = mbedtls_hpke_seal(&snd, d(aad0), dl(aad0), d(pt0), dl(pt0),
+                            buf, sizeof(buf), &len);
+    TEST_ASSERT(ret == 0);
+    ASSERT_COMPARE(buf, len, d(ct0), dl(ct0));
+    TEST_ASSERT((int) snd.seq == seq0 + 1);
+
+    for (int i = seq0 + 1; i < seq1; i++) {
+        ret = mbedtls_hpke_seal(&snd, NULL, 0,
+                                (const unsigned char *) "x", 1,
+                                buf, sizeof(buf), &len);
+        TEST_ASSERT(ret == 0);
+    }
+    ret = mbedtls_hpke_seal(&snd, d(aad1), dl(aad1), d(pt1), dl(pt1),
+                            buf, sizeof(buf), &len);
+    TEST_ASSERT(ret == 0);
+    ASSERT_COMPARE(buf, len, d(ct1), dl(ct1));
+    TEST_ASSERT((int) snd.seq == seq1 + 1);
+
+exit:
+    mbedtls_hpke_free(&snd);
+    USE_PSA_DONE();
+}
+/* END_CASE */
+
+/* BEGIN_CASE */
+void hpke_multi_message(int kem_id, int kdf_id, int aead_id,
+                        data_t *info, data_t *pk_r, data_t *sk_r,
+                        data_t *sk_e, data_t *enc,
+                        data_t *expected_key, data_t *expected_nonce,
+                        int count,
+                        data_t *aad0, data_t *pt0, data_t *ct0,
+                        data_t *aad1, data_t *pt1, data_t *ct1,
+                        data_t *aad2, data_t *pt2, data_t *ct2)
+{
+    mbedtls_hpke_context snd, rcv;
+    const data_t *aads[3] = { aad0, aad1, aad2 };
+    const data_t *pts[3] = { pt0, pt1, pt2 };
+    const data_t *cts[3] = { ct0, ct1, ct2 };
+    unsigned char got_enc[MBEDTLS_HPKE_MAX_ENC_LEN];
+    unsigned char ct[256];
+    unsigned char pt[256];
+    size_t got_enc_len = 0, ct_len, pt_len;
+    int ret;
+
+    USE_PSA_INIT();
+    mbedtls_hpke_init(&snd);
+    mbedtls_hpke_init(&rcv);
+
+    ret = mbedtls_hpke_setup_base_s(&snd, kem_id, kdf_id, aead_id,
+                                    d(pk_r), dl(pk_r), d(info), dl(info),
+                                    d(sk_e), dl(sk_e),
+                                    got_enc, sizeof(got_enc), &got_enc_len);
+    TEST_ASSERT(ret == 0);
+    ASSERT_COMPARE(got_enc, got_enc_len, d(enc), dl(enc));
+    ASSERT_COMPARE(snd.key, snd.key_len, d(expected_key), dl(expected_key));
+    ASSERT_COMPARE(snd.base_nonce, snd.nonce_len,
+                   d(expected_nonce), dl(expected_nonce));
+
+    ret = hpke_test_setup_r(&rcv, kem_id, kdf_id, aead_id, enc, sk_r, info);
+    TEST_ASSERT(ret == 0);
+
+    for (int i = 0; i < count; i++) {
+        ret = mbedtls_hpke_seal(&snd, d(aads[i]), dl(aads[i]),
+                                d(pts[i]), dl(pts[i]),
+                                ct, sizeof(ct), &ct_len);
+        TEST_ASSERT(ret == 0);
+        ASSERT_COMPARE(ct, ct_len, d(cts[i]), dl(cts[i]));
+
+        memset(pt, 0, sizeof(pt));
+        ret = mbedtls_hpke_open(&rcv, d(aads[i]), dl(aads[i]),
+                                ct, ct_len, pt, sizeof(pt), &pt_len);
+        TEST_ASSERT(ret == 0);
+        ASSERT_COMPARE(pt, pt_len, d(pts[i]), dl(pts[i]));
+    }
+    TEST_ASSERT((int) snd.seq == count);
+    TEST_ASSERT((int) rcv.seq == count);
+
+exit:
+    mbedtls_hpke_free(&snd);
+    mbedtls_hpke_free(&rcv);
+    USE_PSA_DONE();
+}
+/* END_CASE */
+
+/* BEGIN_CASE */
+void hpke_export_only(int kem_id, int kdf_id, int aead_id,
+                      data_t *info, data_t *pk_r, data_t *sk_r,
+                      data_t *sk_e, data_t *enc,
+                      data_t *expected_key, data_t *expected_nonce,
+                      int count,
+                      data_t *ctx0, int len0, data_t *val0,
+                      data_t *ctx1, int len1, data_t *val1,
+                      data_t *ctx2, int len2, data_t *val2)
+{
+    mbedtls_hpke_context snd, rcv;
+    unsigned char got_enc[MBEDTLS_HPKE_MAX_ENC_LEN];
+    unsigned char buf_s[128];
+    unsigned char buf_r[128];
+    size_t got_enc_len = 0;
+    const data_t *contexts[3] = { ctx0, ctx1, ctx2 };
+    int lengths[3] = { len0, len1, len2 };
+    const data_t *values[3] = { val0, val1, val2 };
+    int ret;
+
+    USE_PSA_INIT();
+    mbedtls_hpke_init(&snd);
+    mbedtls_hpke_init(&rcv);
+
+    ret = mbedtls_hpke_setup_base_s(&snd, kem_id, kdf_id, aead_id,
+                                    d(pk_r), dl(pk_r), d(info), dl(info),
+                                    d(sk_e), dl(sk_e),
+                                    got_enc, sizeof(got_enc), &got_enc_len);
+    TEST_ASSERT(ret == 0);
+    ASSERT_COMPARE(got_enc, got_enc_len, d(enc), dl(enc));
+    ASSERT_COMPARE(snd.key, snd.key_len, d(expected_key), dl(expected_key));
+    ASSERT_COMPARE(snd.base_nonce, snd.nonce_len,
+                   d(expected_nonce), dl(expected_nonce));
+
+    ret = hpke_test_setup_r(&rcv, kem_id, kdf_id, aead_id, enc, sk_r, info);
+    TEST_ASSERT(ret == 0);
+
+    for (int i = 0; i < count; i++) {
+        ret = mbedtls_hpke_export(&snd, d(contexts[i]), dl(contexts[i]),
+                                  (size_t) lengths[i], buf_s);
+        TEST_ASSERT(ret == 0);
+        ret = mbedtls_hpke_export(&rcv, d(contexts[i]), dl(contexts[i]),
+                                  (size_t) lengths[i], buf_r);
+        TEST_ASSERT(ret == 0);
+        ASSERT_COMPARE(buf_s, (size_t) lengths[i],
+                       d(values[i]), dl(values[i]));
+        ASSERT_COMPARE(buf_r, (size_t) lengths[i],
+                       buf_s, (size_t) lengths[i]);
+    }
+    /* Export must not consume sequence numbers. */
+    TEST_ASSERT(snd.seq == 0 && rcv.seq == 0);
+
+exit:
+    mbedtls_hpke_free(&snd);
+    mbedtls_hpke_free(&rcv);
+    USE_PSA_DONE();
+}
+/* END_CASE */
+
+/* BEGIN_CASE */
+void hpke_invalid_suite(int kem_id, int kdf_id, int aead_id,
+                        int expected_error)
+{
+    USE_PSA_INIT();
+    TEST_EQUAL(mbedtls_hpke_check_suite((uint16_t) kem_id,
+                                        (uint16_t) kdf_id,
+                                        (uint16_t) aead_id),
+               expected_error);
+    USE_PSA_DONE();
+}
+/* END_CASE */
+
+/* BEGIN_CASE */
+void hpke_setup_bad_public_key(int kem_id)
+{
+    mbedtls_hpke_context ctx;
+    unsigned char sk[32];
+    unsigned char enc[MBEDTLS_HPKE_MAX_ENC_LEN];
+    size_t enc_len = 0;
+    int ret;
+    size_t nenc = kem_id == MBEDTLS_HPKE_KEM_P256_HKDF_SHA256 ? 65 : 32;
+
+    USE_PSA_INIT();
+    mbedtls_hpke_init(&ctx);
+    hpke_fill_pattern(sk, sizeof(sk), 1);
+
+    {
+        /* Wrong length public key. */
+        unsigned char bad_pk[65];
+        memset(bad_pk, 0x04, sizeof(bad_pk));
+        ret = mbedtls_hpke_setup_base_s(&ctx, kem_id,
+                                        MBEDTLS_HPKE_KDF_HKDF_SHA256,
+                                        MBEDTLS_HPKE_AEAD_AES_128_GCM,
+                                        bad_pk, nenc - 1,
+                                        NULL, 0, sk, sizeof(sk),
+                                        enc, sizeof(enc), &enc_len);
+        TEST_ASSERT(ret == MBEDTLS_ERR_HPKE_BAD_INPUT_DATA);
+    }
+
+    {
+        /* All-zero public key: rejected by the ECDH validation. */
+        unsigned char bad_pk[65];
+        memset(bad_pk, 0, sizeof(bad_pk));
+        if (nenc == 65) {
+            bad_pk[0] = 0x04;
+        }
+        ret = mbedtls_hpke_setup_base_s(&ctx, kem_id,
+                                        MBEDTLS_HPKE_KDF_HKDF_SHA256,
+                                        MBEDTLS_HPKE_AEAD_AES_128_GCM,
+                                        bad_pk, nenc, NULL, 0,
+                                        sk, sizeof(sk),
+                                        enc, sizeof(enc), &enc_len);
+        TEST_ASSERT(ret == MBEDTLS_ERR_HPKE_INVALID_PUBLIC_KEY);
+    }
+
+    if (kem_id == MBEDTLS_HPKE_KEM_P256_HKDF_SHA256) {
+        /* P-256: point not on the curve (valid encoding, garbage tail). */
+        unsigned char bad_pk[65];
+        memset(bad_pk, 0xAB, sizeof(bad_pk));
+        bad_pk[0] = 0x04;
+        ret = mbedtls_hpke_setup_base_s(&ctx, kem_id,
+                                        MBEDTLS_HPKE_KDF_HKDF_SHA256,
+                                        MBEDTLS_HPKE_AEAD_AES_128_GCM,
+                                        bad_pk, nenc, NULL, 0,
+                                        sk, sizeof(sk),
+                                        enc, sizeof(enc), &enc_len);
+        TEST_ASSERT(ret == MBEDTLS_ERR_HPKE_INVALID_PUBLIC_KEY);
+
+        /* Wrong point encoding prefix. */
+        bad_pk[0] = 0x02;
+        ret = mbedtls_hpke_setup_base_s(&ctx, kem_id,
+                                        MBEDTLS_HPKE_KDF_HKDF_SHA256,
+                                        MBEDTLS_HPKE_AEAD_AES_128_GCM,
+                                        bad_pk, nenc, NULL, 0,
+                                        sk, sizeof(sk),
+                                        enc, sizeof(enc), &enc_len);
+        TEST_ASSERT(ret == MBEDTLS_ERR_HPKE_INVALID_PUBLIC_KEY);
+    } else {
+        /* X25519: canonical small-order u-coordinate is rejected. */
+        static const unsigned char low_order[32] = {
+            0xE0, 0xEB, 0x7A, 0x7C, 0x3B, 0x41, 0xB8, 0xAE,
+            0x16, 0x56, 0xE3, 0xFA, 0xF1, 0x9F, 0xC4, 0x6A,
+            0xDA, 0x09, 0x8D, 0xEB, 0x9C, 0x40, 0x29, 0x8C,
+            0xD7, 0xF6, 0x9E, 0x60, 0x62, 0x55, 0xB3, 0x05
+        };
+        ret = mbedtls_hpke_setup_base_s(&ctx, kem_id,
+                                        MBEDTLS_HPKE_KDF_HKDF_SHA256,
+                                        MBEDTLS_HPKE_AEAD_AES_128_GCM,
+                                        low_order, sizeof(low_order),
+                                        NULL, 0, sk, sizeof(sk),
+                                        enc, sizeof(enc), &enc_len);
+        TEST_ASSERT(ret == MBEDTLS_ERR_HPKE_INVALID_PUBLIC_KEY);
+    }
+
+    /* Failure must not leave the context set up. */
+    TEST_ASSERT(mbedtls_hpke_message_limit(&ctx) == 1);
+    TEST_ASSERT(enc_len == 0);
+
+exit:
+    mbedtls_hpke_free(&ctx);
+    USE_PSA_DONE();
+}
+/* END_CASE */
+
+/* BEGIN_CASE */
+void hpke_setup_bad_enc(int kem_id)
+{
+    mbedtls_hpke_context rcv;
+    unsigned char sk_r[32];
+    int ret;
+    size_t nenc = kem_id == MBEDTLS_HPKE_KEM_P256_HKDF_SHA256 ? 65 : 32;
+
+    USE_PSA_INIT();
+    mbedtls_hpke_init(&rcv);
+    hpke_fill_pattern(sk_r, sizeof(sk_r), 2);
+
+    {
+        /* Truncated enc. */
+        unsigned char enc[65];
+        memset(enc, 0x04, sizeof(enc));
+        ret = mbedtls_hpke_setup_base_r(&rcv, kem_id,
+                                        MBEDTLS_HPKE_KDF_HKDF_SHA256,
+                                        MBEDTLS_HPKE_AEAD_AES_128_GCM,
+                                        enc, nenc - 1,
+                                        sk_r, sizeof(sk_r), NULL, 0);
+        TEST_ASSERT(ret == MBEDTLS_ERR_HPKE_BAD_INPUT_DATA);
+    }
+
+    {
+        /* Invalid enc point. */
+        unsigned char enc[65];
+        memset(enc, 0, sizeof(enc));
+        if (nenc == 65) {
+            enc[0] = 0x04;
+            memset(enc + 1, 0x77, nenc - 1);
+        }
+        ret = mbedtls_hpke_setup_base_r(&rcv, kem_id,
+                                        MBEDTLS_HPKE_KDF_HKDF_SHA256,
+                                        MBEDTLS_HPKE_AEAD_AES_128_GCM,
+                                        enc, nenc,
+                                        sk_r, sizeof(sk_r), NULL, 0);
+        TEST_ASSERT(ret == MBEDTLS_ERR_HPKE_INVALID_PUBLIC_KEY);
+    }
+
+    /* A bad recipient private key length is an input error. */
+    ret = mbedtls_hpke_setup_base_r(&rcv, kem_id,
+                                    MBEDTLS_HPKE_KDF_HKDF_SHA256,
+                                    MBEDTLS_HPKE_AEAD_AES_128_GCM,
+                                    (const unsigned char *) "", 0,
+                                    sk_r, sizeof(sk_r), NULL, 0);
+    TEST_ASSERT(ret == MBEDTLS_ERR_HPKE_BAD_INPUT_DATA);
+
+    TEST_ASSERT(mbedtls_hpke_message_limit(&rcv) == 1);
+
+exit:
+    mbedtls_hpke_free(&rcv);
+    USE_PSA_DONE();
+}
+/* END_CASE */
+
+/* BEGIN_CASE */
+void hpke_argument_errors(void)
+{
+    mbedtls_hpke_context ctx;
+    mbedtls_hpke_context raw;
+    unsigned char sk[32];
+    unsigned char pk[65];
+    unsigned char enc[65];
+    unsigned char ct[64];
+    unsigned char pt[64];
+    unsigned char out[128];
+    size_t len = 0;
+
+    USE_PSA_INIT();
+    mbedtls_hpke_init(&ctx);
+    hpke_fill_pattern(sk, sizeof(sk), 3);
+    memset(pk, 0x04, sizeof(pk));
+    memset(enc, 0x04, sizeof(enc));
+
+    /* NULL contexts and output parameters. */
+    TEST_ASSERT(mbedtls_hpke_setup_base_s(NULL,
+                                          MBEDTLS_HPKE_KEM_X25519_HKDF_SHA256,
+                                          MBEDTLS_HPKE_KDF_HKDF_SHA256,
+                                          MBEDTLS_HPKE_AEAD_AES_128_GCM,
+                                          pk, 32, NULL, 0, sk, 32,
+                                          enc, sizeof(enc), &len)
+                == MBEDTLS_ERR_HPKE_BAD_INPUT_DATA);
+    TEST_ASSERT(mbedtls_hpke_setup_base_r(NULL,
+                                          MBEDTLS_HPKE_KEM_X25519_HKDF_SHA256,
+                                          MBEDTLS_HPKE_KDF_HKDF_SHA256,
+                                          MBEDTLS_HPKE_AEAD_AES_128_GCM,
+                                          enc, 32, sk, 32, NULL, 0)
+                == MBEDTLS_ERR_HPKE_BAD_INPUT_DATA);
+
+    /* NULL pointer with a non-zero length. */
+    TEST_ASSERT(mbedtls_hpke_setup_base_s(&ctx,
+                                          MBEDTLS_HPKE_KEM_X25519_HKDF_SHA256,
+                                          MBEDTLS_HPKE_KDF_HKDF_SHA256,
+                                          MBEDTLS_HPKE_AEAD_AES_128_GCM,
+                                          NULL, 32, NULL, 0, sk, 32,
+                                          enc, sizeof(enc), &len)
+                == MBEDTLS_ERR_HPKE_BAD_INPUT_DATA);
+
+    /* enc output buffer too small. */
+    TEST_ASSERT(mbedtls_hpke_setup_base_s(&ctx,
+                                          MBEDTLS_HPKE_KEM_P256_HKDF_SHA256,
+                                          MBEDTLS_HPKE_KDF_HKDF_SHA256,
+                                          MBEDTLS_HPKE_AEAD_AES_128_GCM,
+                                          pk, 65, NULL, 0, sk, 32,
+                                          enc, 32, &len)
+                == MBEDTLS_ERR_HPKE_BUFFER_TOO_SMALL);
+
+    /* Bad private key length. */
+    TEST_ASSERT(mbedtls_hpke_setup_base_s(&ctx,
+                                          MBEDTLS_HPKE_KEM_X25519_HKDF_SHA256,
+                                          MBEDTLS_HPKE_KDF_HKDF_SHA256,
+                                          MBEDTLS_HPKE_AEAD_AES_128_GCM,
+                                          pk, 32, NULL, 0, sk, 31,
+                                          enc, sizeof(enc), &len)
+                == MBEDTLS_ERR_HPKE_BAD_INPUT_DATA);
+
+    /* Operations on a context that was only initialized. */
+    memset(&raw, 0, sizeof(raw));
+    mbedtls_hpke_init(&raw);
+    TEST_ASSERT(mbedtls_hpke_seal(&raw, NULL, 0, pt, 1,
+                                  ct, sizeof(ct), &len)
+                == MBEDTLS_ERR_HPKE_BAD_STATE);
+    TEST_ASSERT(mbedtls_hpke_open(&raw, NULL, 0, ct,
+                                  MBEDTLS_HPKE_TAG_LEN,
+                                  pt, sizeof(pt), &len)
+                == MBEDTLS_ERR_HPKE_BAD_STATE);
+    TEST_ASSERT(mbedtls_hpke_export(&raw, NULL, 0, 16, out)
+                == MBEDTLS_ERR_HPKE_BAD_STATE);
+    TEST_ASSERT(mbedtls_hpke_message_limit(&raw) == 1);
+
+    /* NULL output length / output buffers. */
+    TEST_ASSERT(mbedtls_hpke_seal(&raw, NULL, 0, pt, 1, ct, sizeof(ct),
+                                  NULL)
+                == MBEDTLS_ERR_HPKE_BAD_INPUT_DATA);
+    TEST_ASSERT(mbedtls_hpke_open(&raw, NULL, 0, ct,
+                                  MBEDTLS_HPKE_TAG_LEN,
+                                  pt, sizeof(pt), NULL)
+                == MBEDTLS_ERR_HPKE_BAD_INPUT_DATA);
+    TEST_ASSERT(mbedtls_hpke_export(&raw, NULL, 0, 16, NULL)
+                == MBEDTLS_ERR_HPKE_BAD_INPUT_DATA);
+
+exit:
+    mbedtls_hpke_free(&ctx);
+    mbedtls_hpke_free(&raw);
+    USE_PSA_DONE();
+}
+/* END_CASE */
+
+/* BEGIN_CASE */
+void hpke_wrong_direction(void)
+{
+    mbedtls_hpke_context snd, rcv;
+    unsigned char sk_e[32];
+    unsigned char sk_r[32];
+    unsigned char pk_r[32];
+    unsigned char enc[32];
+    unsigned char ct[64];
+    unsigned char pt[64];
+    size_t enc_len = 0, ct_len = 0, pt_len = 0;
+    psa_key_attributes_t attr = psa_key_attributes_init();
+    mbedtls_svc_key_id_t id = 0;
+    int ret;
+
+    USE_PSA_INIT();
+    mbedtls_hpke_init(&snd);
+    mbedtls_hpke_init(&rcv);
+
+    /* Generate a valid X25519 recipient key pair via PSA. */
+    psa_set_key_usage_flags(&attr, PSA_KEY_USAGE_DERIVE |
+                            PSA_KEY_USAGE_EXPORT);
+    psa_set_key_algorithm(&attr, PSA_ALG_ECDH);
+    psa_set_key_type(&attr,
+                     PSA_KEY_TYPE_ECC_KEY_PAIR(PSA_ECC_FAMILY_MONTGOMERY));
+    psa_set_key_bits(&attr, 255);
+    TEST_ASSERT(psa_generate_key(&attr, &id) == PSA_SUCCESS);
+    TEST_ASSERT(psa_export_key(id, sk_r, sizeof(sk_r), &enc_len)
+                == PSA_SUCCESS);
+    TEST_ASSERT(enc_len == 32);
+    TEST_ASSERT(psa_export_public_key(id, pk_r, sizeof(pk_r), &enc_len)
+                == PSA_SUCCESS);
+    TEST_ASSERT(enc_len == 32);
+    psa_destroy_key(id);
+    hpke_fill_pattern(sk_e, sizeof(sk_e), 9);
+
+    ret = mbedtls_hpke_setup_base_s(&snd,
+                                    MBEDTLS_HPKE_KEM_X25519_HKDF_SHA256,
+                                    MBEDTLS_HPKE_KDF_HKDF_SHA256,
+                                    MBEDTLS_HPKE_AEAD_CHACHA20_POLY1305,
+                                    pk_r, 32, (const unsigned char *) "i", 1,
+                                    sk_e, sizeof(sk_e),
+                                    enc, sizeof(enc), &enc_len);
+    TEST_ASSERT(ret == 0);
+    ret = mbedtls_hpke_setup_base_r(&rcv,
+                                    MBEDTLS_HPKE_KEM_X25519_HKDF_SHA256,
+                                    MBEDTLS_HPKE_KDF_HKDF_SHA256,
+                                    MBEDTLS_HPKE_AEAD_CHACHA20_POLY1305,
+                                    enc, enc_len, sk_r, sizeof(sk_r),
+                                    (const unsigned char *) "i", 1);
+    TEST_ASSERT(ret == 0);
+
+    /* Open() on a sender and Seal() on a recipient are bad-state errors. */
+    ret = mbedtls_hpke_open(&snd, NULL, 0, ct, MBEDTLS_HPKE_TAG_LEN,
+                            pt, sizeof(pt), &pt_len);
+    TEST_ASSERT(ret == MBEDTLS_ERR_HPKE_BAD_STATE);
+    ret = mbedtls_hpke_seal(&rcv, NULL, 0, pt, 1, ct, sizeof(ct), &ct_len);
+    TEST_ASSERT(ret == MBEDTLS_ERR_HPKE_BAD_STATE);
+    TEST_ASSERT(snd.seq == 0 && rcv.seq == 0);
+
+exit:
+    mbedtls_hpke_free(&snd);
+    mbedtls_hpke_free(&rcv);
+    USE_PSA_DONE();
+}
+/* END_CASE */
+
+/* BEGIN_CASE */
+void hpke_tamper_and_wrong_key(void)
+{
+    const int kem = MBEDTLS_HPKE_KEM_X25519_HKDF_SHA256;
+    const int kdf = MBEDTLS_HPKE_KDF_HKDF_SHA256;
+    const int aead = MBEDTLS_HPKE_AEAD_AES_128_GCM;
+    mbedtls_hpke_context snd, rcv, alt;
+    unsigned char sk_e[32];
+    unsigned char sk_r[32];
+    unsigned char sk_alt[32];
+    unsigned char pk_r[32];
+    unsigned char pk_alt[32];
+    unsigned char enc[32];
+    unsigned char enc_alt[32];
+    unsigned char ct[128];
+    unsigned char pt[128];
+    size_t enc_len = 0, ct_len = 0, pt_len = 0, alt_enc_len = 0;
+    int ret;
+
+    USE_PSA_INIT();
+    mbedtls_hpke_init(&snd);
+    mbedtls_hpke_init(&rcv);
+    mbedtls_hpke_init(&alt);
+    hpke_fill_pattern(sk_e, sizeof(sk_e), 11);
+    hpke_fill_pattern(sk_r, sizeof(sk_r), 21);
+    hpke_fill_pattern(sk_alt, sizeof(sk_alt), 31);
+
+    /* Derive the two public keys. */
+    {
+        psa_key_attributes_t attr = psa_key_attributes_init();
+        mbedtls_svc_key_id_t id = 0;
+        size_t l = 0;
+        psa_set_key_usage_flags(&attr, PSA_KEY_USAGE_DERIVE |
+                                PSA_KEY_USAGE_EXPORT);
+        psa_set_key_algorithm(&attr, PSA_ALG_ECDH);
+        psa_set_key_type(&attr,
+                         PSA_KEY_TYPE_ECC_KEY_PAIR(PSA_ECC_FAMILY_MONTGOMERY));
+        psa_set_key_bits(&attr, 255);
+        TEST_ASSERT(psa_import_key(&attr, sk_r, sizeof(sk_r), &id)
+                    == PSA_SUCCESS);
+        TEST_ASSERT(psa_export_public_key(id, pk_r, sizeof(pk_r), &l)
+                    == PSA_SUCCESS);
+        psa_destroy_key(id);
+        TEST_ASSERT(psa_import_key(&attr, sk_alt, sizeof(sk_alt), &id)
+                    == PSA_SUCCESS);
+        TEST_ASSERT(psa_export_public_key(id, pk_alt, sizeof(pk_alt), &l)
+                    == PSA_SUCCESS);
+        psa_destroy_key(id);
+    }
+
+    ret = mbedtls_hpke_setup_base_s(&snd, kem, kdf, aead, pk_r, 32,
+                                    (const unsigned char *) "info", 4,
+                                    sk_e, sizeof(sk_e),
+                                    enc, sizeof(enc), &enc_len);
+    TEST_ASSERT(ret == 0);
+    ret = mbedtls_hpke_setup_base_r(&rcv, kem, kdf, aead, enc, enc_len,
+                                    sk_r, sizeof(sk_r),
+                                    (const unsigned char *) "info", 4);
+    TEST_ASSERT(ret == 0);
+
+    ret = mbedtls_hpke_seal(&snd, (const unsigned char *) "aad", 3,
+                            (const unsigned char *) "secret message", 14,
+                            ct, sizeof(ct), &ct_len);
+    TEST_ASSERT(ret == 0);
+
+    /* 1. Tamper with every ciphertext byte: every one must fail auth. */
+    for (size_t i = 0; i < ct_len; i++) {
+        unsigned char saved = ct[i];
+        unsigned char zeros[sizeof(pt)];
+        memset(zeros, 0, sizeof(zeros));
+        memset(pt, 0xAA, sizeof(pt));
+        ct[i] ^= 0x01;
+        ret = mbedtls_hpke_open(&rcv, (const unsigned char *) "aad", 3,
+                                ct, ct_len, pt, sizeof(pt), &pt_len);
+        TEST_ASSERT(ret == MBEDTLS_ERR_HPKE_AUTH_FAILED);
+        /* No plaintext leaked: the plaintext region is zeroized on
+         * authentication failure (the AEAD clears it before returning). */
+        ASSERT_COMPARE(pt, ct_len - MBEDTLS_HPKE_TAG_LEN,
+                       zeros, ct_len - MBEDTLS_HPKE_TAG_LEN);
+        /* Sequence number must not advance on failure. */
+        TEST_ASSERT(rcv.seq == 0);
+        ct[i] = saved;
+    }
+
+    /* 2. Tampered AAD is an auth failure with the same error code. */
+    ret = mbedtls_hpke_open(&rcv, (const unsigned char *) "aAd", 3,
+                            ct, ct_len, pt, sizeof(pt), &pt_len);
+    TEST_ASSERT(ret == MBEDTLS_ERR_HPKE_AUTH_FAILED);
+    TEST_ASSERT(rcv.seq == 0);
+
+    /* 3. After all failures, the valid message still opens. */
+    ret = mbedtls_hpke_open(&rcv, (const unsigned char *) "aad", 3,
+                            ct, ct_len, pt, sizeof(pt), &pt_len);
+    TEST_ASSERT(ret == 0);
+    ASSERT_COMPARE(pt, pt_len,
+                   (const unsigned char *) "secret message", 14);
+    TEST_ASSERT(rcv.seq == 1);
+
+    /* 4. Wrong recipient key: the context derives different keys, so
+     * decryption fails auth rather than crashing. */
+    ret = mbedtls_hpke_setup_base_s(&alt, kem, kdf, aead, pk_alt, 32,
+                                    (const unsigned char *) "info", 4,
+                                    sk_e, sizeof(sk_e),
+                                    enc_alt, sizeof(enc_alt), &alt_enc_len);
+    TEST_ASSERT(ret == 0);
+    (void) enc_alt;
+    /* A recipient with the wrong private key on the original enc. */
+    {
+        mbedtls_hpke_context wrong;
+        mbedtls_hpke_init(&wrong);
+        ret = mbedtls_hpke_setup_base_r(&wrong, kem, kdf, aead,
+                                        enc, enc_len, sk_alt,
+                                        sizeof(sk_alt),
+                                        (const unsigned char *) "info", 4);
+        TEST_ASSERT(ret == 0);
+        memset(pt, 0, sizeof(pt));
+        ret = mbedtls_hpke_open(&wrong, (const unsigned char *) "aad", 3,
+                                ct, ct_len, pt, sizeof(pt), &pt_len);
+        TEST_ASSERT(ret == MBEDTLS_ERR_HPKE_AUTH_FAILED);
+        mbedtls_hpke_free(&wrong);
+    }
+
+    /* 5. Wrong info binding: setup succeeds (it is not authenticated),
+     * but the derived keys differ and Open() fails. */
+    {
+        mbedtls_hpke_context wrong_info;
+        mbedtls_hpke_init(&wrong_info);
+        ret = mbedtls_hpke_setup_base_r(&wrong_info, kem, kdf, aead,
+                                        enc, enc_len, sk_r, sizeof(sk_r),
+                                        (const unsigned char *) "infO", 4);
+        TEST_ASSERT(ret == 0);
+        ret = mbedtls_hpke_open(&wrong_info, (const unsigned char *) "aad",
+                                3, ct, ct_len, pt, sizeof(pt), &pt_len);
+        TEST_ASSERT(ret == MBEDTLS_ERR_HPKE_AUTH_FAILED);
+        mbedtls_hpke_free(&wrong_info);
+    }
+
+exit:
+    mbedtls_hpke_free(&snd);
+    mbedtls_hpke_free(&rcv);
+    mbedtls_hpke_free(&alt);
+    USE_PSA_DONE();
+}
+/* END_CASE */
+
+/* BEGIN_CASE */
+void hpke_context_reuse(void)
+{
+    mbedtls_hpke_context ctx;
+    unsigned char sk_e[32];
+    unsigned char sk_r[32];
+    unsigned char pk_r[32];
+    unsigned char enc[32];
+    size_t enc_len = 0;
+    int ret;
+
+    USE_PSA_INIT();
+    mbedtls_hpke_init(&ctx);
+    hpke_fill_pattern(sk_e, sizeof(sk_e), 4);
+    hpke_fill_pattern(sk_r, sizeof(sk_r), 5);
+
+    {
+        psa_key_attributes_t attr = psa_key_attributes_init();
+        mbedtls_svc_key_id_t id = 0;
+        size_t l = 0;
+        psa_set_key_usage_flags(&attr, PSA_KEY_USAGE_DERIVE |
+                                PSA_KEY_USAGE_EXPORT);
+        psa_set_key_algorithm(&attr, PSA_ALG_ECDH);
+        psa_set_key_type(&attr,
+                         PSA_KEY_TYPE_ECC_KEY_PAIR(PSA_ECC_FAMILY_MONTGOMERY));
+        psa_set_key_bits(&attr, 255);
+        TEST_ASSERT(psa_import_key(&attr, sk_r, sizeof(sk_r), &id)
+                    == PSA_SUCCESS);
+        TEST_ASSERT(psa_export_public_key(id, pk_r, sizeof(pk_r), &l)
+                    == PSA_SUCCESS);
+        psa_destroy_key(id);
+    }
+
+    /* First use as a sender. */
+    ret = mbedtls_hpke_setup_base_s(&ctx,
+                                    MBEDTLS_HPKE_KEM_X25519_HKDF_SHA256,
+                                    MBEDTLS_HPKE_KDF_HKDF_SHA256,
+                                    MBEDTLS_HPKE_AEAD_AES_128_GCM,
+                                    pk_r, 32, NULL, 0,
+                                    sk_e, sizeof(sk_e),
+                                    enc, sizeof(enc), &enc_len);
+    TEST_ASSERT(ret == 0);
+
+    /* Re-setting a live context is a bad-state error. */
+    ret = mbedtls_hpke_setup_base_s(&ctx,
+                                    MBEDTLS_HPKE_KEM_X25519_HKDF_SHA256,
+                                    MBEDTLS_HPKE_KDF_HKDF_SHA256,
+                                    MBEDTLS_HPKE_AEAD_AES_128_GCM,
+                                    pk_r, 32, NULL, 0,
+                                    sk_e, sizeof(sk_e),
+                                    enc, sizeof(enc), &enc_len);
+    TEST_ASSERT(ret == MBEDTLS_ERR_HPKE_BAD_STATE);
+    ret = mbedtls_hpke_setup_base_r(&ctx,
+                                    MBEDTLS_HPKE_KEM_X25519_HKDF_SHA256,
+                                    MBEDTLS_HPKE_KDF_HKDF_SHA256,
+                                    MBEDTLS_HPKE_AEAD_AES_128_GCM,
+                                    enc, enc_len, sk_r, sizeof(sk_r),
+                                    NULL, 0);
+    TEST_ASSERT(ret == MBEDTLS_ERR_HPKE_BAD_STATE);
+
+    /* After free, the context can be set up again, in either role. */
+    mbedtls_hpke_free(&ctx);
+    ret = mbedtls_hpke_setup_base_r(&ctx,
+                                    MBEDTLS_HPKE_KEM_X25519_HKDF_SHA256,
+                                    MBEDTLS_HPKE_KDF_HKDF_SHA256,
+                                    MBEDTLS_HPKE_AEAD_AES_128_GCM,
+                                    enc, enc_len, sk_r, sizeof(sk_r),
+                                    NULL, 0);
+    TEST_ASSERT(ret == 0);
+    TEST_ASSERT(mbedtls_hpke_message_limit(&ctx) == 0);
+
+exit:
+    mbedtls_hpke_free(&ctx);
+    USE_PSA_DONE();
+}
+/* END_CASE */
+
+/* BEGIN_CASE */
+void hpke_export_length_limits(void)
+{
+    mbedtls_hpke_context ctx;
+    unsigned char sk_e[32];
+    unsigned char sk_r[32];
+    unsigned char pk_r[32];
+    unsigned char enc[32];
+    unsigned char buf[64];
+    size_t enc_len = 0;
+    int ret;
+
+    USE_PSA_INIT();
+    mbedtls_hpke_init(&ctx);
+    hpke_fill_pattern(sk_e, sizeof(sk_e), 6);
+    hpke_fill_pattern(sk_r, sizeof(sk_r), 7);
+    {
+        psa_key_attributes_t attr = psa_key_attributes_init();
+        mbedtls_svc_key_id_t id = 0;
+        size_t l = 0;
+        psa_set_key_usage_flags(&attr, PSA_KEY_USAGE_DERIVE |
+                                PSA_KEY_USAGE_EXPORT);
+        psa_set_key_algorithm(&attr, PSA_ALG_ECDH);
+        psa_set_key_type(&attr,
+                         PSA_KEY_TYPE_ECC_KEY_PAIR(PSA_ECC_FAMILY_MONTGOMERY));
+        psa_set_key_bits(&attr, 255);
+        TEST_ASSERT(psa_import_key(&attr, sk_r, sizeof(sk_r), &id)
+                    == PSA_SUCCESS);
+        TEST_ASSERT(psa_export_public_key(id, pk_r, sizeof(pk_r), &l)
+                    == PSA_SUCCESS);
+        psa_destroy_key(id);
+    }
+
+    ret = mbedtls_hpke_setup_base_s(&ctx,
+                                    MBEDTLS_HPKE_KEM_X25519_HKDF_SHA256,
+                                    MBEDTLS_HPKE_KDF_HKDF_SHA256,
+                                    MBEDTLS_HPKE_AEAD_AES_128_GCM,
+                                    pk_r, 32, NULL, 0,
+                                    sk_e, sizeof(sk_e),
+                                    enc, sizeof(enc), &enc_len);
+    TEST_ASSERT(ret == 0);
+
+    /* Zero length is allowed and writes nothing. */
+    ret = mbedtls_hpke_export(&ctx, NULL, 0, 0, buf);
+    TEST_ASSERT(ret == 0);
+
+    /* One byte and the full 255*Nh limit succeed. */
+    ret = mbedtls_hpke_export(&ctx, (const unsigned char *) "x", 1, 1, buf);
+    TEST_ASSERT(ret == 0);
+    {
+        unsigned char *big = mbedtls_calloc(1, 255U * 32U);
+        TEST_ASSERT(big != NULL);
+        ret = mbedtls_hpke_export(&ctx, NULL, 0, 255U * 32U, big);
+        TEST_ASSERT(ret == 0);
+        mbedtls_free(big);
+    }
+
+    /* Over the limit. */
+    ret = mbedtls_hpke_export(&ctx, NULL, 0, 255U * 32U + 1, buf);
+    TEST_ASSERT(ret == MBEDTLS_ERR_HPKE_BAD_INPUT_DATA);
+    ret = mbedtls_hpke_export(&ctx, NULL, 0, MBEDTLS_HPKE_MAX_EXPORT_LEN + 1,
+                              buf);
+    TEST_ASSERT(ret == MBEDTLS_ERR_HPKE_BAD_INPUT_DATA);
+
+exit:
+    mbedtls_hpke_free(&ctx);
+    USE_PSA_DONE();
+}
+/* END_CASE */
+
+/* BEGIN_CASE */
+void hpke_open_buffer_and_short_ct(void)
+{
+    mbedtls_hpke_context snd, rcv;
+    unsigned char sk_e[32];
+    unsigned char sk_r[32];
+    unsigned char pk_r[32];
+    unsigned char enc[32];
+    unsigned char ct[64];
+    unsigned char pt[64];
+    size_t enc_len = 0, ct_len = 0, pt_len = 0;
+    int ret;
+
+    USE_PSA_INIT();
+    mbedtls_hpke_init(&snd);
+    mbedtls_hpke_init(&rcv);
+    hpke_fill_pattern(sk_e, sizeof(sk_e), 8);
+    hpke_fill_pattern(sk_r, sizeof(sk_r), 9);
+    {
+        psa_key_attributes_t attr = psa_key_attributes_init();
+        mbedtls_svc_key_id_t id = 0;
+        size_t l = 0;
+        psa_set_key_usage_flags(&attr, PSA_KEY_USAGE_DERIVE |
+                                PSA_KEY_USAGE_EXPORT);
+        psa_set_key_algorithm(&attr, PSA_ALG_ECDH);
+        psa_set_key_type(&attr,
+                         PSA_KEY_TYPE_ECC_KEY_PAIR(PSA_ECC_FAMILY_MONTGOMERY));
+        psa_set_key_bits(&attr, 255);
+        TEST_ASSERT(psa_import_key(&attr, sk_r, sizeof(sk_r), &id)
+                    == PSA_SUCCESS);
+        TEST_ASSERT(psa_export_public_key(id, pk_r, sizeof(pk_r), &l)
+                    == PSA_SUCCESS);
+        psa_destroy_key(id);
+    }
+
+    ret = mbedtls_hpke_setup_base_s(&snd,
+                                    MBEDTLS_HPKE_KEM_X25519_HKDF_SHA256,
+                                    MBEDTLS_HPKE_KDF_HKDF_SHA256,
+                                    MBEDTLS_HPKE_AEAD_AES_128_GCM,
+                                    pk_r, 32, NULL, 0,
+                                    sk_e, sizeof(sk_e),
+                                    enc, sizeof(enc), &enc_len);
+    TEST_ASSERT(ret == 0);
+    ret = mbedtls_hpke_setup_base_r(&rcv,
+                                    MBEDTLS_HPKE_KEM_X25519_HKDF_SHA256,
+                                    MBEDTLS_HPKE_KDF_HKDF_SHA256,
+                                    MBEDTLS_HPKE_AEAD_AES_128_GCM,
+                                    enc, enc_len, sk_r, sizeof(sk_r),
+                                    NULL, 0);
+    TEST_ASSERT(ret == 0);
+
+    ret = mbedtls_hpke_seal(&snd, NULL, 0,
+                            (const unsigned char *) "hello", 5,
+                            ct, sizeof(ct), &ct_len);
+    TEST_ASSERT(ret == 0);
+    TEST_ASSERT(ct_len == 21);
+
+    /* Ciphertext shorter than the tag is an input error, not auth. */
+    for (size_t bad = 0; bad < MBEDTLS_HPKE_TAG_LEN; bad++) {
+        ret = mbedtls_hpke_open(&rcv, NULL, 0, ct, bad,
+                                pt, sizeof(pt), &pt_len);
+        TEST_ASSERT(ret == MBEDTLS_ERR_HPKE_BAD_INPUT_DATA);
+    }
+
+    /* Output buffer one byte too small. */
+    ret = mbedtls_hpke_open(&rcv, NULL, 0, ct, ct_len,
+                            pt, 4, &pt_len);
+    TEST_ASSERT(ret == MBEDTLS_ERR_HPKE_BUFFER_TOO_SMALL);
+
+    /* Correctly sized buffer works. */
+    ret = mbedtls_hpke_open(&rcv, NULL, 0, ct, ct_len,
+                            pt, sizeof(pt), &pt_len);
+    TEST_ASSERT(ret == 0);
+    ASSERT_COMPARE(pt, pt_len, (const unsigned char *) "hello", 5);
+
+exit:
+    mbedtls_hpke_free(&snd);
+    mbedtls_hpke_free(&rcv);
+    USE_PSA_DONE();
+}
+/* END_CASE */
+
+/* BEGIN_CASE */
+void hpke_seal_buffer_too_small(void)
+{
+    mbedtls_hpke_context ctx;
+    unsigned char sk_e[32];
+    unsigned char sk_r[32];
+    unsigned char pk_r[32];
+    unsigned char enc[32];
+    unsigned char ct[64];
+    size_t enc_len = 0, ct_len = 0;
+    int ret;
+
+    USE_PSA_INIT();
+    mbedtls_hpke_init(&ctx);
+    hpke_fill_pattern(sk_e, sizeof(sk_e), 12);
+    hpke_fill_pattern(sk_r, sizeof(sk_r), 13);
+    {
+        psa_key_attributes_t attr = psa_key_attributes_init();
+        mbedtls_svc_key_id_t id = 0;
+        size_t l = 0;
+        psa_set_key_usage_flags(&attr, PSA_KEY_USAGE_DERIVE |
+                                PSA_KEY_USAGE_EXPORT);
+        psa_set_key_algorithm(&attr, PSA_ALG_ECDH);
+        psa_set_key_type(&attr,
+                         PSA_KEY_TYPE_ECC_KEY_PAIR(PSA_ECC_FAMILY_MONTGOMERY));
+        psa_set_key_bits(&attr, 255);
+        TEST_ASSERT(psa_import_key(&attr, sk_r, sizeof(sk_r), &id)
+                    == PSA_SUCCESS);
+        TEST_ASSERT(psa_export_public_key(id, pk_r, sizeof(pk_r), &l)
+                    == PSA_SUCCESS);
+        psa_destroy_key(id);
+    }
+
+    ret = mbedtls_hpke_setup_base_s(&ctx,
+                                    MBEDTLS_HPKE_KEM_X25519_HKDF_SHA256,
+                                    MBEDTLS_HPKE_KDF_HKDF_SHA256,
+                                    MBEDTLS_HPKE_AEAD_AES_256_GCM,
+                                    pk_r, 32, NULL, 0,
+                                    sk_e, sizeof(sk_e),
+                                    enc, sizeof(enc), &enc_len);
+    TEST_ASSERT(ret == 0);
+
+    /* 10-byte plaintext needs 26 bytes; check a range of small buffers. */
+    for (size_t cap = 0; cap < 26; cap++) {
+        ret = mbedtls_hpke_seal(&ctx, NULL, 0,
+                                (const unsigned char *) "0123456789", 10,
+                                ct, cap, &ct_len);
+        TEST_ASSERT(ret == MBEDTLS_ERR_HPKE_BUFFER_TOO_SMALL);
+    }
+    /* The failed calls must not consume sequence numbers. */
+    TEST_ASSERT(ctx.seq == 0);
+
+    ret = mbedtls_hpke_seal(&ctx, NULL, 0,
+                            (const unsigned char *) "0123456789", 10,
+                            ct, sizeof(ct), &ct_len);
+    TEST_ASSERT(ret == 0);
+    TEST_ASSERT(ct_len == 26);
+    TEST_ASSERT(ctx.seq == 1);
+
+exit:
+    mbedtls_hpke_free(&ctx);
+    USE_PSA_DONE();
+}
+/* END_CASE */
+
+/* BEGIN_CASE */
+void hpke_message_limit(void)
+{
+    mbedtls_hpke_context snd, rcv;
+    unsigned char sk_e[32];
+    unsigned char sk_r[32];
+    unsigned char pk_r[32];
+    unsigned char enc[32];
+    unsigned char ct[64];
+    unsigned char pt[64];
+    size_t enc_len = 0, ct_len = 0, pt_len = 0;
+    int ret;
+
+    USE_PSA_INIT();
+    mbedtls_hpke_init(&snd);
+    mbedtls_hpke_init(&rcv);
+    hpke_fill_pattern(sk_e, sizeof(sk_e), 14);
+    hpke_fill_pattern(sk_r, sizeof(sk_r), 15);
+    {
+        psa_key_attributes_t attr = psa_key_attributes_init();
+        mbedtls_svc_key_id_t id = 0;
+        size_t l = 0;
+        psa_set_key_usage_flags(&attr, PSA_KEY_USAGE_DERIVE |
+                                PSA_KEY_USAGE_EXPORT);
+        psa_set_key_algorithm(&attr, PSA_ALG_ECDH);
+        psa_set_key_type(&attr,
+                         PSA_KEY_TYPE_ECC_KEY_PAIR(PSA_ECC_FAMILY_MONTGOMERY));
+        psa_set_key_bits(&attr, 255);
+        TEST_ASSERT(psa_import_key(&attr, sk_r, sizeof(sk_r), &id)
+                    == PSA_SUCCESS);
+        TEST_ASSERT(psa_export_public_key(id, pk_r, sizeof(pk_r), &l)
+                    == PSA_SUCCESS);
+        psa_destroy_key(id);
+    }
+
+    ret = mbedtls_hpke_setup_base_s(&snd,
+                                    MBEDTLS_HPKE_KEM_X25519_HKDF_SHA256,
+                                    MBEDTLS_HPKE_KDF_HKDF_SHA256,
+                                    MBEDTLS_HPKE_AEAD_CHACHA20_POLY1305,
+                                    pk_r, 32, NULL, 0,
+                                    sk_e, sizeof(sk_e),
+                                    enc, sizeof(enc), &enc_len);
+    TEST_ASSERT(ret == 0);
+    ret = mbedtls_hpke_setup_base_r(&rcv,
+                                    MBEDTLS_HPKE_KEM_X25519_HKDF_SHA256,
+                                    MBEDTLS_HPKE_KDF_HKDF_SHA256,
+                                    MBEDTLS_HPKE_AEAD_CHACHA20_POLY1305,
+                                    enc, enc_len, sk_r, sizeof(sk_r),
+                                    NULL, 0);
+    TEST_ASSERT(ret == 0);
+
+    /* Force the sequence to its maximum value without burning 2^96 calls.
+     * The structure is public to the test suite (internal header layout is
+     * part of the module's test surface). */
+    snd.seq = UINT64_MAX;
+    rcv.seq = UINT64_MAX;
+    TEST_ASSERT(mbedtls_hpke_message_limit(&snd) == 1);
+    TEST_ASSERT(mbedtls_hpke_message_limit(&rcv) == 1);
+
+    ret = mbedtls_hpke_seal(&snd, NULL, 0, (const unsigned char *) "x", 1,
+                            ct, sizeof(ct), &ct_len);
+    TEST_ASSERT(ret == MBEDTLS_ERR_HPKE_MESSAGE_LIMIT);
+    ret = mbedtls_hpke_open(&rcv, NULL, 0, ct, MBEDTLS_HPKE_TAG_LEN,
+                            pt, sizeof(pt), &pt_len);
+    TEST_ASSERT(ret == MBEDTLS_ERR_HPKE_MESSAGE_LIMIT);
+    TEST_ASSERT(snd.seq == UINT64_MAX && rcv.seq == UINT64_MAX);
+
+    /* Export remains available at the limit and does not move the seq. */
+    ret = mbedtls_hpke_export(&snd, NULL, 0, 16, pt);
+    TEST_ASSERT(ret == 0);
+    TEST_ASSERT(snd.seq == UINT64_MAX);
+
+exit:
+    mbedtls_hpke_free(&snd);
+    mbedtls_hpke_free(&rcv);
+    USE_PSA_DONE();
+}
+/* END_CASE */
+
+/* BEGIN_CASE */
+void hpke_wiped_on_free(void)
+{
+    mbedtls_hpke_context ctx;
+    unsigned char sk_e[32];
+    unsigned char sk_r[32];
+    unsigned char pk_r[32];
+    unsigned char enc[32];
+    size_t enc_len = 0;
+    int ret;
+
+    USE_PSA_INIT();
+    hpke_fill_pattern(sk_e, sizeof(sk_e), 16);
+    hpke_fill_pattern(sk_r, sizeof(sk_r), 17);
+    {
+        psa_key_attributes_t attr = psa_key_attributes_init();
+        mbedtls_svc_key_id_t id = 0;
+        size_t l = 0;
+        psa_set_key_usage_flags(&attr, PSA_KEY_USAGE_DERIVE |
+                                PSA_KEY_USAGE_EXPORT);
+        psa_set_key_algorithm(&attr, PSA_ALG_ECDH);
+        psa_set_key_type(&attr,
+                         PSA_KEY_TYPE_ECC_KEY_PAIR(PSA_ECC_FAMILY_MONTGOMERY));
+        psa_set_key_bits(&attr, 255);
+        TEST_ASSERT(psa_import_key(&attr, sk_r, sizeof(sk_r), &id)
+                    == PSA_SUCCESS);
+        TEST_ASSERT(psa_export_public_key(id, pk_r, sizeof(pk_r), &l)
+                    == PSA_SUCCESS);
+        psa_destroy_key(id);
+    }
+
+    memset(&ctx, 0, sizeof(ctx));
+    mbedtls_hpke_init(&ctx);
+    ret = mbedtls_hpke_setup_base_s(&ctx,
+                                    MBEDTLS_HPKE_KEM_X25519_HKDF_SHA256,
+                                    MBEDTLS_HPKE_KDF_HKDF_SHA384,
+                                    MBEDTLS_HPKE_AEAD_AES_256_GCM,
+                                    pk_r, 32, NULL, 0,
+                                    sk_e, sizeof(sk_e),
+                                    enc, sizeof(enc), &enc_len);
+    TEST_ASSERT(ret == 0);
+
+    /* Key material must be present while live. */
+    {
+        int nonzero = 0;
+        for (size_t i = 0; i < sizeof(ctx.key); i++) {
+            nonzero |= ctx.key[i] != 0;
+        }
+        TEST_ASSERT(nonzero);
+    }
+
+    mbedtls_hpke_free(&ctx);
+
+    /* Everything except the re-armed init marker is zeroized. */
+    {
+        mbedtls_hpke_context zero;
+        memset(&zero, 0, sizeof(zero));
+        zero.magic = ctx.magic;
+        ASSERT_COMPARE((unsigned char *) &ctx, sizeof(ctx),
+                       (unsigned char *) &zero, sizeof(zero));
+    }
+    TEST_ASSERT(ctx.magic != 0);
+    TEST_ASSERT(ctx.seq == 0);
+    TEST_ASSERT(mbedtls_hpke_message_limit(&ctx) == 1);
+
+    /* free() on an already-freed context and on NULL are safe. */
+    mbedtls_hpke_free(&ctx);
+    mbedtls_hpke_free(NULL);
+
+    USE_PSA_DONE();
+}
+/* END_CASE */
+
+/* BEGIN_CASE */
+void hpke_deterministic_and_random_setup(void)
+{
+    const int kem = MBEDTLS_HPKE_KEM_P256_HKDF_SHA256;
+    const int kdf = MBEDTLS_HPKE_KDF_HKDF_SHA256;
+    const int aead = MBEDTLS_HPKE_AEAD_AES_128_GCM;
+    mbedtls_hpke_context s1, s2, rcv;
+    unsigned char sk_e1[32];
+    unsigned char sk_e2[32];
+    unsigned char sk_r[32];
+    unsigned char pk_r[65];
+    unsigned char enc1[65];
+    unsigned char enc2[65];
+    unsigned char ct[64];
+    unsigned char pt[64];
+    size_t enc1_len = 0, enc2_len = 0, ct_len = 0, pt_len = 0;
+    int ret;
+
+    USE_PSA_INIT();
+    mbedtls_hpke_init(&s1);
+    mbedtls_hpke_init(&s2);
+    mbedtls_hpke_init(&rcv);
+    hpke_fill_pattern(sk_e1, sizeof(sk_e1), 18);
+    hpke_fill_pattern(sk_r, sizeof(sk_r), 19);
+    TEST_ASSERT(psa_generate_random(sk_e2, sizeof(sk_e2)) == PSA_SUCCESS);
+
+    {
+        psa_key_attributes_t attr = psa_key_attributes_init();
+        mbedtls_svc_key_id_t id = 0;
+        size_t l = 0;
+        psa_set_key_usage_flags(&attr, PSA_KEY_USAGE_DERIVE |
+                                PSA_KEY_USAGE_EXPORT);
+        psa_set_key_algorithm(&attr, PSA_ALG_ECDH);
+        psa_set_key_type(&attr,
+                         PSA_KEY_TYPE_ECC_KEY_PAIR(PSA_ECC_FAMILY_SECP_R1));
+        psa_set_key_bits(&attr, 256);
+        TEST_ASSERT(psa_import_key(&attr, sk_r, sizeof(sk_r), &id)
+                    == PSA_SUCCESS);
+        TEST_ASSERT(psa_export_public_key(id, pk_r, sizeof(pk_r), &l)
+                    == PSA_SUCCESS);
+        TEST_ASSERT(l == 65);
+        psa_destroy_key(id);
+    }
+
+    /* Deterministic ephemeral: same input reproduces the same enc. */
+    ret = mbedtls_hpke_setup_base_s(&s1, kem, kdf, aead, pk_r, 65, NULL, 0,
+                                    sk_e1, sizeof(sk_e1),
+                                    enc1, sizeof(enc1), &enc1_len);
+    TEST_ASSERT(ret == 0);
+    ret = mbedtls_hpke_setup_base_s(&s2, kem, kdf, aead, pk_r, 65, NULL, 0,
+                                    sk_e1, sizeof(sk_e1),
+                                    enc2, sizeof(enc2), &enc2_len);
+    TEST_ASSERT(ret == 0);
+    TEST_ASSERT(enc1_len == enc2_len && enc1_len == 65);
+    ASSERT_COMPARE(enc1, enc1_len, enc2, enc2_len);
+    mbedtls_hpke_free(&s2);
+
+    /* Random ephemeral yields a different enc, and the recipient can
+     * open a message sealed under it. */
+    mbedtls_hpke_init(&s2);
+    ret = mbedtls_hpke_setup_base_s(&s2, kem, kdf, aead, pk_r, 65, NULL, 0,
+                                    sk_e2, sizeof(sk_e2),
+                                    enc2, sizeof(enc2), &enc2_len);
+    TEST_ASSERT(ret == 0);
+    TEST_ASSERT(memcmp(enc1, enc2, enc1_len) != 0);
+
+    ret = mbedtls_hpke_setup_base_r(&rcv, kem, kdf, aead,
+                                    enc2, enc2_len, sk_r, sizeof(sk_r),
+                                    NULL, 0);
+    TEST_ASSERT(ret == 0);
+    ret = mbedtls_hpke_seal(&s2, NULL, 0,
+                            (const unsigned char *) "random ephemeral", 16,
+                            ct, sizeof(ct), &ct_len);
+    TEST_ASSERT(ret == 0);
+    ret = mbedtls_hpke_open(&rcv, NULL, 0, ct, ct_len,
+                            pt, sizeof(pt), &pt_len);
+    TEST_ASSERT(ret == 0);
+    ASSERT_COMPARE(pt, pt_len,
+                   (const unsigned char *) "random ephemeral", 16);
+
+exit:
+    mbedtls_hpke_free(&s1);
+    mbedtls_hpke_free(&s2);
+    mbedtls_hpke_free(&rcv);
+    USE_PSA_DONE();
+}
+/* END_CASE */

@@ -1,0 +1,12 @@
+Features
+   * Add an HPKE (RFC 9180) Base mode implementation in a new module,
+     enabled by the new MBEDTLS_HPKE_C option (library/hpke.c). It
+     supports the DHKEM(P-256, HKDF-SHA256) and
+     DHKEM(X25519, HKDF-SHA256) key encapsulation mechanisms, the
+     HKDF-SHA256 and HKDF-SHA384 key derivation functions, and the
+     AES-128-GCM, AES-256-GCM and ChaCha20-Poly1305 AEADs. The public
+     API (mbedtls/hpke.h) provides SetupBaseS/SetupBaseR, Seal/Open and
+     the secret exporter, with distinguishable error codes for invalid
+     public keys, unsupported suites, sequence-number exhaustion, context
+     reuse and authentication failures. The change is purely additive and
+     does not modify the existing TLS or crypto interfaces.

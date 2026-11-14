@@ -1,5 +1,6 @@
 set(src_x509
     error.c
+    hpke.c
     mbedtls_config.c
     pkcs7.c
     x509.c

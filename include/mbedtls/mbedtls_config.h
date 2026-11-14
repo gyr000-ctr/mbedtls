@@ -168,6 +168,26 @@
  */
 //#define MBEDTLS_USER_CONFIG_FILE "/dev/null"
 
+/**
+ * \def MBEDTLS_HPKE_C
+ *
+ * Enable the Hybrid Public Key Encryption (HPKE, RFC 9180) module,
+ * Base mode only, in library/hpke.c.
+ *
+ * The supported cipher suites are DHKEM(P-256, HKDF-SHA256) and
+ * DHKEM(X25519, HKDF-SHA256) as KEMs, HKDF-SHA256/HKDF-SHA384 as KDFs
+ * and AES-128-GCM, AES-256-GCM as well as ChaCha20-Poly1305 as AEADs.
+ *
+ * Module:  library/hpke.c
+ *
+ * Requires the corresponding PSA Crypto mechanisms to be enabled:
+ * PSA_WANT_ALG_ECDH, PSA_WANT_ALG_HKDF (extract and expand),
+ * PSA_WANT_ALG_GCM and/or PSA_WANT_ALG_CHACHA20_POLY1305,
+ * PSA_WANT_ALG_SHA_256 (and PSA_WANT_ALG_SHA_384 for HKDF-SHA384),
+ * PSA_WANT_ECC_SECP_R1_256 and/or PSA_WANT_ECC_MONTGOMERY_255.
+ */
+#define MBEDTLS_HPKE_C
+
 /** \} name SECTION: General configuration options */
 
 /**

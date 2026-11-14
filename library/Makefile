@@ -108,6 +108,7 @@ OBJS_CRYPTO = $(TF_PSA_CRYPTO_LIBRARY_OBJS)
 
 OBJS_X509= \
 	   mbedtls_config.o \
+	   hpke.o \
 	   x509.o \
 	   x509_create.o \
 	   x509_crl.o \

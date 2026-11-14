@@ -40,7 +40,7 @@ my @low_level_modules = qw( AES ARIA ASN1 BASE64 BIGNUM
                             ENTROPY ERROR GCM HKDF HMAC_DRBG LMS MD5
                             NET PBKDF2 PLATFORM POLY1305 RIPEMD160
                             SHA1 SHA256 SHA512 SHA3 THREADING );
-my @high_level_modules = qw( CIPHER ECP MD
+my @high_level_modules = qw( CIPHER ECP MD HPKE
                              PEM PK PKCS12 PKCS5
                              RSA SSL X509 PKCS7 );
 
