@@ -412,6 +412,9 @@ x509_verify_info:0:"":""
 X509 Verify Information: one issue
 x509_verify_info:MBEDTLS_X509_BADCERT_MISSING:"":"Certificate was missing\n"
 
+X509 Verify Information: name constraints violation
+x509_verify_info:MBEDTLS_X509_BADCERT_NAME_CONSTRAINT:"":"The certificate violates a name constraints extension\n"
+
 X509 Verify Information: two issues
 x509_verify_info:MBEDTLS_X509_BADCERT_EXPIRED | MBEDTLS_X509_BADCRL_EXPIRED:"":"The certificate validity has expired\nThe CRL is expired\n"
 
@@ -3580,3 +3583,165 @@ oid_get_numeric_string:"8001":MBEDTLS_ERR_ASN1_INVALID_DATA:""
 
 OID get numeric string - overlong encoding, second subidentifier
 oid_get_numeric_string:"2B8001":MBEDTLS_ERR_ASN1_INVALID_DATA:""
+
+X509 name constraints: parse well-formed extensions
+x509_name_constraints_parse:"../framework/data_files/name_constraints/nc-ca-dns-permitted.crt.pem":0
+
+X509 name constraints: parse excluded subtree
+x509_name_constraints_parse:"../framework/data_files/name_constraints/nc-ca-dns-excluded.crt.pem":0
+
+X509 name constraints: parse IP constraints
+x509_name_constraints_parse:"../framework/data_files/name_constraints/nc-ca-ip.crt.pem":0
+
+X509 name constraints: parse email constraints
+x509_name_constraints_parse:"../framework/data_files/name_constraints/nc-ca-email.crt.pem":0
+
+X509 name constraints: parse full email constraints
+x509_name_constraints_parse:"../framework/data_files/name_constraints/nc-ca-email-full.crt.pem":0
+
+X509 name constraints: parse URI constraints
+x509_name_constraints_parse:"../framework/data_files/name_constraints/nc-ca-uri.crt.pem":0
+
+X509 name constraints: parse full URI constraints
+x509_name_constraints_parse:"../framework/data_files/name_constraints/nc-ca-uri-full.crt.pem":0
+
+X509 name constraints: parse directoryName constraints
+x509_name_constraints_parse:"../framework/data_files/name_constraints/nc-ca-dir.crt.pem":0
+
+X509 name constraints: parse non-critical constraints
+x509_name_constraints_parse:"../framework/data_files/name_constraints/nc-ca-non-critical.crt.pem":0
+
+X509 name constraints: parse empty DNS constraint
+x509_name_constraints_parse:"../framework/data_files/name_constraints/nc-ca-empty.crt.pem":0
+
+X509 name constraints: reject malformed directoryName
+x509_name_constraints_parse:"../framework/data_files/name_constraints/nc-ca-malformed-dir.crt.pem":MBEDTLS_ERR_X509_INVALID_EXTENSIONS
+
+X509 name constraints: reject empty GeneralSubtrees
+x509_name_constraints_parse:"../framework/data_files/name_constraints/nc-ca-malformed-empty-subtrees.crt.pem":MBEDTLS_ERR_X509_INVALID_EXTENSIONS
+
+X509 name constraints: reject bad IP length
+x509_name_constraints_parse:"../framework/data_files/name_constraints/nc-ca-malformed-ip-len.crt.pem":MBEDTLS_ERR_X509_INVALID_EXTENSIONS
+
+X509 name constraints: reject trailing junk in subtree
+x509_name_constraints_parse:"../framework/data_files/name_constraints/nc-ca-malformed-junk.crt.pem":MBEDTLS_ERR_X509_INVALID_EXTENSIONS
+
+X509 name constraints: reject malformed maximum
+x509_name_constraints_parse:"../framework/data_files/name_constraints/nc-ca-malformed-max.crt.pem":MBEDTLS_ERR_X509_INVALID_EXTENSIONS
+
+X509 name constraints: reject malformed minimum
+x509_name_constraints_parse:"../framework/data_files/name_constraints/nc-ca-malformed-min.crt.pem":MBEDTLS_ERR_X509_INVALID_EXTENSIONS
+
+X509 name constraints: reject unsupported otherName
+x509_name_constraints_parse:"../framework/data_files/name_constraints/nc-ca-malformed-othername.crt.pem":MBEDTLS_ERR_X509_INVALID_EXTENSIONS
+
+X509 name constraints: reject unexpected GeneralName tag
+x509_name_constraints_parse:"../framework/data_files/name_constraints/nc-ca-malformed-tag.crt.pem":MBEDTLS_ERR_X509_INVALID_EXTENSIONS
+
+X509 name constraints: verify DNS permitted match
+x509_name_constraints_verify:"../framework/data_files/name_constraints/nc-chain-dns-ok.pem":"../framework/data_files/name_constraints/nc-root.crt.pem":0:0
+
+X509 name constraints: verify DNS permitted SAN violation
+x509_name_constraints_verify:"../framework/data_files/name_constraints/nc-chain-dns-bad-san.pem":"../framework/data_files/name_constraints/nc-root.crt.pem":MBEDTLS_ERR_X509_CERT_VERIFY_FAILED:MBEDTLS_X509_BADCERT_NAME_CONSTRAINT
+
+X509 name constraints: verify DNS permitted CN violation
+x509_name_constraints_verify:"../framework/data_files/name_constraints/nc-chain-dns-bad-cn.pem":"../framework/data_files/name_constraints/nc-root.crt.pem":MBEDTLS_ERR_X509_CERT_VERIFY_FAILED:MBEDTLS_X509_BADCERT_NAME_CONSTRAINT
+
+X509 name constraints: verify cert without SAN against DNS constraint
+x509_name_constraints_verify:"../framework/data_files/name_constraints/nc-chain-no-san.pem":"../framework/data_files/name_constraints/nc-root.crt.pem":0:0
+
+X509 name constraints: verify DNS excluded miss
+x509_name_constraints_verify:"../framework/data_files/name_constraints/nc-chain-excluded-miss.pem":"../framework/data_files/name_constraints/nc-root.crt.pem":0:0
+
+X509 name constraints: verify DNS excluded hit
+x509_name_constraints_verify:"../framework/data_files/name_constraints/nc-chain-excluded-hit.pem":"../framework/data_files/name_constraints/nc-root.crt.pem":MBEDTLS_ERR_X509_CERT_VERIFY_FAILED:MBEDTLS_X509_BADCERT_NAME_CONSTRAINT
+
+X509 name constraints: verify mixed permitted and excluded, match
+x509_name_constraints_verify:"../framework/data_files/name_constraints/nc-chain-mixed-ok.pem":"../framework/data_files/name_constraints/nc-root.crt.pem":0:0
+
+X509 name constraints: verify mixed permitted and excluded, excluded hit
+x509_name_constraints_verify:"../framework/data_files/name_constraints/nc-chain-mixed-excluded.pem":"../framework/data_files/name_constraints/nc-root.crt.pem":MBEDTLS_ERR_X509_CERT_VERIFY_FAILED:MBEDTLS_X509_BADCERT_NAME_CONSTRAINT
+
+X509 name constraints: verify IPv4 and IPv6 permitted match
+x509_name_constraints_verify:"../framework/data_files/name_constraints/nc-chain-ip-ok.pem":"../framework/data_files/name_constraints/nc-root.crt.pem":0:0
+
+X509 name constraints: verify IP permitted violation
+x509_name_constraints_verify:"../framework/data_files/name_constraints/nc-chain-ip-bad.pem":"../framework/data_files/name_constraints/nc-root.crt.pem":MBEDTLS_ERR_X509_CERT_VERIFY_FAILED:MBEDTLS_X509_BADCERT_NAME_CONSTRAINT
+
+X509 name constraints: verify email domain match
+x509_name_constraints_verify:"../framework/data_files/name_constraints/nc-chain-email-ok.pem":"../framework/data_files/name_constraints/nc-root.crt.pem":0:0
+
+X509 name constraints: verify email domain violation
+x509_name_constraints_verify:"../framework/data_files/name_constraints/nc-chain-email-bad.pem":"../framework/data_files/name_constraints/nc-root.crt.pem":MBEDTLS_ERR_X509_CERT_VERIFY_FAILED:MBEDTLS_X509_BADCERT_NAME_CONSTRAINT
+
+X509 name constraints: verify email subdomain match
+x509_name_constraints_verify:"../framework/data_files/name_constraints/nc-chain-email-subdomain-bad.pem":"../framework/data_files/name_constraints/nc-root.crt.pem":MBEDTLS_ERR_X509_CERT_VERIFY_FAILED:MBEDTLS_X509_BADCERT_NAME_CONSTRAINT
+
+X509 name constraints: verify email dotted subdomain match
+x509_name_constraints_verify:"../framework/data_files/name_constraints/nc-chain-email-dotted-subdomain-ok.pem":"../framework/data_files/name_constraints/nc-root.crt.pem":0:0
+
+X509 name constraints: verify email dotted apex rejected
+x509_name_constraints_verify:"../framework/data_files/name_constraints/nc-chain-email-dotted-apex-bad.pem":"../framework/data_files/name_constraints/nc-root.crt.pem":MBEDTLS_ERR_X509_CERT_VERIFY_FAILED:MBEDTLS_X509_BADCERT_NAME_CONSTRAINT
+
+X509 name constraints: verify full mailbox match
+x509_name_constraints_verify:"../framework/data_files/name_constraints/nc-chain-email-full-ok.pem":"../framework/data_files/name_constraints/nc-root.crt.pem":0:0
+
+X509 name constraints: verify full mailbox violation
+x509_name_constraints_verify:"../framework/data_files/name_constraints/nc-chain-email-full-bad.pem":"../framework/data_files/name_constraints/nc-root.crt.pem":MBEDTLS_ERR_X509_CERT_VERIFY_FAILED:MBEDTLS_X509_BADCERT_NAME_CONSTRAINT
+
+X509 name constraints: verify URI host match
+x509_name_constraints_verify:"../framework/data_files/name_constraints/nc-chain-uri-ok.pem":"../framework/data_files/name_constraints/nc-root.crt.pem":0:0
+
+X509 name constraints: verify URI host violation
+x509_name_constraints_verify:"../framework/data_files/name_constraints/nc-chain-uri-bad.pem":"../framework/data_files/name_constraints/nc-root.crt.pem":MBEDTLS_ERR_X509_CERT_VERIFY_FAILED:MBEDTLS_X509_BADCERT_NAME_CONSTRAINT
+
+X509 name constraints: verify URI subdomain rejected by bare host constraint
+x509_name_constraints_verify:"../framework/data_files/name_constraints/nc-chain-uri-subdomain-bad.pem":"../framework/data_files/name_constraints/nc-root.crt.pem":MBEDTLS_ERR_X509_CERT_VERIFY_FAILED:MBEDTLS_X509_BADCERT_NAME_CONSTRAINT
+
+X509 name constraints: verify URI dotted subdomain match
+x509_name_constraints_verify:"../framework/data_files/name_constraints/nc-chain-uri-dotted-ok.pem":"../framework/data_files/name_constraints/nc-root.crt.pem":0:0
+
+X509 name constraints: verify URI dotted apex rejected
+x509_name_constraints_verify:"../framework/data_files/name_constraints/nc-chain-uri-dotted-apex-bad.pem":"../framework/data_files/name_constraints/nc-root.crt.pem":MBEDTLS_ERR_X509_CERT_VERIFY_FAILED:MBEDTLS_X509_BADCERT_NAME_CONSTRAINT
+
+X509 name constraints: verify full URI prefix match
+x509_name_constraints_verify:"../framework/data_files/name_constraints/nc-chain-uri-full-ok.pem":"../framework/data_files/name_constraints/nc-root.crt.pem":0:0
+
+X509 name constraints: verify full URI prefix violation
+x509_name_constraints_verify:"../framework/data_files/name_constraints/nc-chain-uri-full-bad.pem":"../framework/data_files/name_constraints/nc-root.crt.pem":MBEDTLS_ERR_X509_CERT_VERIFY_FAILED:MBEDTLS_X509_BADCERT_NAME_CONSTRAINT
+
+X509 name constraints: verify directoryName subject match
+x509_name_constraints_verify:"../framework/data_files/name_constraints/nc-chain-dir-ok.pem":"../framework/data_files/name_constraints/nc-root.crt.pem":0:0
+
+X509 name constraints: verify directoryName subject violation
+x509_name_constraints_verify:"../framework/data_files/name_constraints/nc-chain-dir-bad.pem":"../framework/data_files/name_constraints/nc-root.crt.pem":MBEDTLS_ERR_X509_CERT_VERIFY_FAILED:MBEDTLS_X509_BADCERT_NAME_CONSTRAINT
+
+X509 name constraints: verify case-insensitive DNS match
+x509_name_constraints_verify:"../framework/data_files/name_constraints/nc-chain-upper-ok.pem":"../framework/data_files/name_constraints/nc-root.crt.pem":0:0
+
+X509 name constraints: verify non-critical constraint match
+x509_name_constraints_verify:"../framework/data_files/name_constraints/nc-chain-non-critical-ok.pem":"../framework/data_files/name_constraints/nc-root.crt.pem":0:0
+
+X509 name constraints: verify non-critical constraint violation enforced
+x509_name_constraints_verify:"../framework/data_files/name_constraints/nc-chain-non-critical-bad.pem":"../framework/data_files/name_constraints/nc-root.crt.pem":MBEDTLS_ERR_X509_CERT_VERIFY_FAILED:MBEDTLS_X509_BADCERT_NAME_CONSTRAINT
+
+X509 name constraints: verify empty DNS constraint matches nothing
+x509_name_constraints_verify:"../framework/data_files/name_constraints/nc-chain-empty-ok.pem":"../framework/data_files/name_constraints/nc-root.crt.pem":0:0
+
+X509 name constraints: verify CA without constraints does not restrict
+x509_name_constraints_verify:"../framework/data_files/name_constraints/nc-chain-plain.pem":"../framework/data_files/name_constraints/nc-root.crt.pem":0:0
+
+X509 name constraints: verify nested constraints combined match
+x509_name_constraints_verify:"../framework/data_files/name_constraints/nc-chain-nested-ok.pem":"../framework/data_files/name_constraints/nc-root.crt.pem":0:0
+
+X509 name constraints: verify nested constraints first CA violation
+x509_name_constraints_verify:"../framework/data_files/name_constraints/nc-chain-nested-bad-level1.pem":"../framework/data_files/name_constraints/nc-root.crt.pem":MBEDTLS_ERR_X509_CERT_VERIFY_FAILED:MBEDTLS_X509_BADCERT_NAME_CONSTRAINT
+
+X509 name constraints: verify nested constraints second CA violation
+x509_name_constraints_verify:"../framework/data_files/name_constraints/nc-chain-nested-bad-level2.pem":"../framework/data_files/name_constraints/nc-root.crt.pem":MBEDTLS_ERR_X509_CERT_VERIFY_FAILED:MBEDTLS_X509_BADCERT_NAME_CONSTRAINT
+
+X509 name constraints: verify SAN directoryName match
+x509_name_constraints_verify:"../framework/data_files/name_constraints/nc-chain-dir-san-ok.pem":"../framework/data_files/name_constraints/nc-root.crt.pem":0:0
+
+X509 name constraints: verify SAN directoryName violation
+x509_name_constraints_verify:"../framework/data_files/name_constraints/nc-chain-dir-san-bad.pem":"../framework/data_files/name_constraints/nc-root.crt.pem":MBEDTLS_ERR_X509_CERT_VERIFY_FAILED:MBEDTLS_X509_BADCERT_NAME_CONSTRAINT

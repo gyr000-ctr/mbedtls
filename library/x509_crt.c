@@ -1026,6 +1026,21 @@ static int x509_get_crt_ext(unsigned char **p,
                 }
                 break;
 
+            case MBEDTLS_X509_EXT_NAME_CONSTRAINTS:
+                /* Parse name constraints (RFC 5280 section 4.2.1.10).
+                 * The extension is validated while parsing and the raw
+                 * value is kept for enforcement during chain verification,
+                 * both when critical and when non-critical. */
+                crt->name_constraints_raw.tag = MBEDTLS_ASN1_OCTET_STRING;
+                crt->name_constraints_raw.p = *p;
+                if ((ret = mbedtls_x509_parse_name_constraints(p,
+                                                                end_ext_octet)) != 0) {
+                    return ret;
+                }
+                crt->name_constraints_raw.len =
+                    (size_t) (*p - crt->name_constraints_raw.p);
+                break;
+
             case MBEDTLS_X509_EXT_NS_CERT_TYPE:
                 /* Parse netscape certificate type */
                 if ((ret = mbedtls_x509_get_ns_cert_type(p, end_ext_octet,
@@ -3194,6 +3209,13 @@ static int x509_crt_verify_restartable_ca_cb(mbedtls_x509_crt *crt,
     if (ret != 0) {
         goto exit;
     }
+
+    /* Enforce name constraints (RFC 5280 section 4.2.1.10): each CA's
+     * constraints apply to every certificate below it in the chain.
+     * Violations are recorded as a verification flag on the offending
+     * certificate rather than a fatal error, like the other certificate
+     * policy checks. */
+    (void) mbedtls_x509_crt_check_name_constraints(&ver_chain);
 
     /* Merge end-entity flags */
     ver_chain.items[0].flags |= ee_flags;

@@ -1,0 +1,13 @@
+Security
+   * Implement RFC 5280 section 4.2.1.10 name constraints enforcement in the
+     X.509 certificate verifier. Previously the nameConstraints extension was
+     recognised in the extension type bitmask but neither parsed nor enforced,
+     so a certificate issued across a permitted/excluded subtree boundary was
+     accepted unconditionally. The verifier now parses the extension (critical
+     or not, for dNSName, iPAddress, rfc822Name, uniformResourceIdentifier and
+     directoryName, including minimum/maximum base distances and multi-level
+     CA inheritance) and sets the new MBEDTLS_X509_BADCERT_NAME_CONSTRAINT
+     verification flag on a certificate that violates any constraint of an
+     issuing CA. Malformed name constraints extensions are rejected during
+     certificate parsing with MBEDTLS_ERR_X509_INVALID_EXTENSIONS instead of
+     being ignored.

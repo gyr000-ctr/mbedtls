@@ -63,6 +63,7 @@ typedef struct mbedtls_x509_crt {
     mbedtls_x509_buf subject_id;        /**< Optional X.509 v2/v3 subject unique identifier. */
     mbedtls_x509_buf v3_ext;            /**< Optional X.509 v3 extensions.  */
     mbedtls_x509_sequence subject_alt_names; /**< Optional list of raw entries of Subject Alternative Names extension. These can be later parsed by mbedtls_x509_parse_subject_alt_name. */
+    mbedtls_x509_buf name_constraints_raw; /**< Optional raw extnValue of the X.509 v3 Name Constraints extension, interpreted during chain verification. */
     mbedtls_x509_buf subject_key_id;    /**< Optional X.509 v3 extension subject key identifier. */
     mbedtls_x509_authority authority_key_id;    /**< Optional X.509 v3 extension authority key identifier. */
 
@@ -213,7 +214,10 @@ mbedtls_x509_crt_profile;
                         "The CRL is signed with an unacceptable PK alg (eg RSA vs ECDSA).")   \
     X509_CRT_ERROR_INFO(MBEDTLS_X509_BADCRL_BAD_KEY,                                                    \
                         "MBEDTLS_X509_BADCRL_BAD_KEY",                                                  \
-                        "The CRL is signed with an unacceptable key (eg bad curve, RSA too short).")
+                        "The CRL is signed with an unacceptable key (eg bad curve, RSA too short).")    \
+    X509_CRT_ERROR_INFO(MBEDTLS_X509_BADCERT_NAME_CONSTRAINT,                                          \
+                        "MBEDTLS_X509_BADCERT_NAME_CONSTRAINT",                                        \
+                        "The certificate violates a name constraints extension")
 
 /**
  * Container for writing a certificate (CRT)

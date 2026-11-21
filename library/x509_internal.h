@@ -78,6 +78,28 @@ int mbedtls_x509_info_key_usage(char **buf, size_t *size,
 int mbedtls_x509_write_set_san_common(mbedtls_asn1_named_data **extensions,
                                       const mbedtls_x509_san_list *san_list);
 
+#if defined(MBEDTLS_X509_CRT_PARSE_C)
+/*
+ * Parse and validate the extnValue of an X.509 Name Constraints extension
+ * (RFC 5280 section 4.2.1.10). On success the extension is known to be
+ * well-formed; its raw value is kept in the certificate and enforced by
+ * mbedtls_x509_crt_check_name_constraints() during chain verification.
+ *
+ * Returns 0 on success, or a negative X.509 error code, without allocating.
+ */
+int mbedtls_x509_parse_name_constraints(unsigned char **p,
+                                        const unsigned char *end);
+
+/*
+ * Enforce the name constraints of every CA certificate in the built
+ * verification chain. On a violation, sets
+ * MBEDTLS_X509_BADCERT_NAME_CONSTRAINT on the offending chain item and
+ * returns -1; returns 0 otherwise.
+ */
+int mbedtls_x509_crt_check_name_constraints(
+    mbedtls_x509_crt_verify_chain *ver_chain);
+#endif /* MBEDTLS_X509_CRT_PARSE_C */
+
 /*
  * Check md_alg against profile
  * Return 0 if md_alg is acceptable for this profile, -1 otherwise
